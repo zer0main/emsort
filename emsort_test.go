@@ -1,84 +1,60 @@
 package emsort
 
 import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
-	"math"
-	"math/rand"
+	"io/ioutil"
+	"os"
+	"strconv"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
-func TestRoundTripMultipleFiles(t *testing.T) {
-	w := &assertingWriter{&bytes.Buffer{}}
-	s, err := New(w, chunk, less, 1000)
-	doTestRoundTrip(t, w, s, err)
-}
+func TestHashSorting(t *testing.T) {
+	// Calculate sha256 of concatentation of sorted array of sha256's of "0", "1", ..., "4999999".
 
-func TestRoundTripSingleFile(t *testing.T) {
-	w := &assertingWriter{&bytes.Buffer{}}
-	s, err := New(w, chunk, less, 100000000)
-	doTestRoundTrip(t, w, s, err)
-}
+	// Control for this value is in file control.py
+	want := "faa9d89248e26e9a6441ad4b1ac0543175ee33d20925b861623d0436a5633dbf"
 
-func doTestRoundTrip(t *testing.T, w *assertingWriter, s SortedWriter, err error) {
-	if assert.NoError(t, err) {
-		halfMaxInt := int64(math.MaxInt64 / 2)
-		for i := 0; i < 100000; i++ {
-			b := make([]byte, 8)
-			binary.BigEndian.PutUint64(b, uint64(halfMaxInt+(rand.Int63n(halfMaxInt))))
-			n, err := s.Write(b)
-			if !assert.NoError(t, err) {
-				return
-			}
-			assert.Equal(t, 8, n)
-		}
-		err := s.Close()
-		if !assert.NoError(t, err) {
-			return
-		}
-		w.finish(t)
+	tmpfile, err := ioutil.TempFile("", "emsort")
+	if err != nil {
+		t.Fatal(err)
 	}
-}
+	defer os.Remove(tmpfile.Name())
 
-func chunk(r io.Reader) ([]byte, error) {
-	b := make([]byte, 8)
-	_, err := io.ReadFull(r, b)
-	return b, err
-}
+	s, err := New(50*1024*1024, tmpfile)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-func less(a []byte, b []byte) bool {
-	return bytes.Compare(a, b) < 0
-}
+	for i := 0; i < 5000000; i++ {
+		text := strconv.Itoa(i)
+		hash := sha256.Sum256([]byte(text))
+		if err := s.Push(hash[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.StopWriting(); err != nil {
+		t.Fatal(err)
+	}
 
-type assertingWriter struct {
-	buf *bytes.Buffer
-}
-
-func (w *assertingWriter) Write(b []byte) (int, error) {
-	return w.buf.Write(b)
-}
-
-func (w *assertingWriter) finish(t *testing.T) {
-	last := int64(-1)
-	numResults := 0
+	hasher := sha256.New()
 	for {
-		var next int64
-		err := binary.Read(w.buf, binary.BigEndian, &next)
+		record, err := s.Pop()
 		if err == io.EOF {
 			break
+		} else if err != nil {
+			t.Fatal(err)
 		}
-		if !assert.NoError(t, err) {
-			return
+		if _, err := hasher.Write(record); err != nil {
+			panic(err)
 		}
-		if !assert.True(t, next > last, fmt.Sprintf("%d not greater than or equal to %d", next, last)) {
-			return
-		}
-		last = next
-		numResults++
 	}
-	assert.Equal(t, 100000, numResults)
+	sum := hasher.Sum(nil)
+
+	got := hex.EncodeToString(sum)
+
+	if got != want {
+		t.Errorf("Got %s, want %s.", got, want)
+	}
 }
