@@ -8,6 +8,9 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"github.com/syndtr/goleveldb/leveldb"
+	"github.com/syndtr/goleveldb/leveldb/iterator"
 )
 
 type sorter interface {
@@ -84,4 +87,48 @@ func TestHashSortingFixed(t *testing.T) {
 	}
 
 	checkHashes(t, s)
+}
+
+func TestHashSortingLevel(t *testing.T) {
+	dir, err := ioutil.TempDir("", "emsort-level")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	db, err := leveldb.OpenFile(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s := &leveldbSorter{db: db}
+	defer func() {
+		s.iter.Release()
+	}()
+
+	checkHashes(t, s)
+}
+
+type leveldbSorter struct {
+	db   *leveldb.DB
+	iter iterator.Iterator
+}
+
+var value = []byte("")
+
+func (s *leveldbSorter) Push(b []byte) error {
+	return s.db.Put(b, value, nil)
+}
+
+func (s *leveldbSorter) StopWriting() error {
+	s.iter = s.db.NewIterator(nil, nil)
+	return nil
+}
+
+func (s *leveldbSorter) Pop() ([]byte, error) {
+	if !s.iter.Next() {
+		return nil, io.EOF
+	}
+	return s.iter.Key(), nil
 }
