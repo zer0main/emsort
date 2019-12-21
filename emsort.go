@@ -11,11 +11,15 @@ import (
 	"container/heap"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 )
 
-func New(memLimit int, tmpfile *os.File) (*ExternalSorter, error) {
+type File interface {
+	io.Writer
+	io.ReaderAt
+}
+
+func New(memLimit int, tmpfile File) (*ExternalSorter, error) {
 	return &ExternalSorter{
 		tmpfile:  tmpfile,
 		memLimit: memLimit,
@@ -23,7 +27,7 @@ func New(memLimit int, tmpfile *os.File) (*ExternalSorter, error) {
 }
 
 type ExternalSorter struct {
-	tmpfile  *os.File
+	tmpfile  File
 	memLimit int
 	memUsed  int
 	sizes    []int
