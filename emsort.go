@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"container/heap"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"sort"
@@ -31,7 +32,6 @@ type ExternalSorter struct {
 	memLimit int
 	memUsed  int
 	sizes    []int
-	records  [][]int
 	vals     [][]byte
 
 	// Reading.
@@ -53,23 +53,23 @@ func (s *ExternalSorter) flush() error {
 	sort.Sort(&inmemory{s.vals})
 
 	out := bufio.NewWriterSize(s.tmpfile, 16*1024*1024)
+	sizeBuf := make([]byte, binary.MaxVarintLen64)
+	size := 0
 	for _, val := range s.vals {
+		n := binary.PutUvarint(sizeBuf, uint64(len(val)))
+		if _, err := out.Write(sizeBuf[:n]); err != nil {
+			return err
+		}
 		if _, err := out.Write(val); err != nil {
 			return err
 		}
+		size += n + len(val)
 	}
 	if err := out.Flush(); err != nil {
 		return err
 	}
 
-	size := 0
-	records := make([]int, 0, len(s.vals))
-	for _, val := range s.vals {
-		size += len(val)
-		records = append(records, len(val))
-	}
 	s.sizes = append(s.sizes, size)
-	s.records = append(s.records, records)
 	s.vals = s.vals[:0]
 	s.memUsed = 0
 
@@ -99,8 +99,7 @@ func (s *ExternalSorter) StopWriting() error {
 	}
 	for i, file := range files {
 		e := &entry{
-			file:    file,
-			records: s.records[i],
+			file: file,
 		}
 		has, err := e.Read()
 		if err != nil {
@@ -152,18 +151,17 @@ func (im *inmemory) Swap(i, j int) {
 }
 
 type entry struct {
-	file    io.Reader
-	val     []byte
-	records []int
+	file *bufio.Reader
+	val  []byte
 }
 
 func (e *entry) Read() (bool, error) {
-	if len(e.records) == 0 {
+	size, err := binary.ReadUvarint(e.file)
+	if err == io.EOF {
 		return false, nil
+	} else if err != nil {
+		return false, err
 	}
-
-	size := e.records[0]
-	e.records = e.records[1:]
 
 	e.val = make([]byte, size)
 
