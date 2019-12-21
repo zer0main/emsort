@@ -15,6 +15,8 @@ import (
 	"sort"
 )
 
+const writeBufferSize = 16 * 1024 * 1024
+
 type File interface {
 	io.Writer
 	io.ReaderAt
@@ -27,12 +29,21 @@ func New(memLimit int, tmpfile File) (*ExternalSorter, error) {
 	}, nil
 }
 
+func NewFixedSize(recordSize, memLimit int, tmpfile File) (*ExternalSorter, error) {
+	return &ExternalSorter{
+		tmpfile:    tmpfile,
+		recordSize: recordSize,
+		memLimit:   memLimit,
+	}, nil
+}
+
 type ExternalSorter struct {
-	tmpfile  File
-	memLimit int
-	memUsed  int
-	sizes    []int
-	vals     [][]byte
+	tmpfile    File
+	recordSize int
+	memLimit   int
+	memUsed    int
+	sizes      []int
+	vals       [][]byte
 
 	// Reading.
 	entries *entryHeap
@@ -52,18 +63,21 @@ func (s *ExternalSorter) Push(b []byte) error {
 func (s *ExternalSorter) flush() error {
 	sort.Sort(&inmemory{s.vals})
 
-	out := bufio.NewWriterSize(s.tmpfile, 16*1024*1024)
+	out := bufio.NewWriterSize(s.tmpfile, writeBufferSize)
 	sizeBuf := make([]byte, binary.MaxVarintLen64)
 	size := 0
 	for _, val := range s.vals {
-		n := binary.PutUvarint(sizeBuf, uint64(len(val)))
-		if _, err := out.Write(sizeBuf[:n]); err != nil {
-			return err
+		if s.recordSize == 0 {
+			n := binary.PutUvarint(sizeBuf, uint64(len(val)))
+			if _, err := out.Write(sizeBuf[:n]); err != nil {
+				return err
+			}
+			size += n
 		}
 		if _, err := out.Write(val); err != nil {
 			return err
 		}
-		size += n + len(val)
+		size += len(val)
 	}
 	if err := out.Flush(); err != nil {
 		return err
@@ -99,7 +113,8 @@ func (s *ExternalSorter) StopWriting() error {
 	}
 	for i, file := range files {
 		e := &entry{
-			file: file,
+			file:       file,
+			recordSize: s.recordSize,
 		}
 		has, err := e.Read()
 		if err != nil {
@@ -151,21 +166,29 @@ func (im *inmemory) Swap(i, j int) {
 }
 
 type entry struct {
-	file *bufio.Reader
-	val  []byte
+	file       *bufio.Reader
+	val        []byte
+	recordSize int
 }
 
 func (e *entry) Read() (bool, error) {
-	size, err := binary.ReadUvarint(e.file)
-	if err == io.EOF {
-		return false, nil
-	} else if err != nil {
-		return false, err
+	size := e.recordSize
+	if size == 0 {
+		size64, err := binary.ReadUvarint(e.file)
+		if err == io.EOF {
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+		size = int(size64)
 	}
 
 	e.val = make([]byte, size)
 
 	if _, err := io.ReadFull(e.file, e.val); err != nil {
+		if err == io.EOF && e.recordSize != 0 {
+			err = nil
+		}
 		return false, err
 	}
 	return true, nil

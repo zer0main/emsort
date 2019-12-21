@@ -10,22 +10,19 @@ import (
 	"testing"
 )
 
-func TestHashSorting(t *testing.T) {
+type sorter interface {
+	Push(b []byte) error
+	StopWriting() error
+	Pop() ([]byte, error)
+}
+
+func checkHashes(t *testing.T, s sorter) {
 	// Calculate sha256 of concatentation of sorted array of sha256's of "0", "1", ..., "4999999".
+
+	t.Parallel()
 
 	// Control for this value is in file control.py
 	want := "faa9d89248e26e9a6441ad4b1ac0543175ee33d20925b861623d0436a5633dbf"
-
-	tmpfile, err := ioutil.TempFile("", "emsort")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(tmpfile.Name())
-
-	s, err := New(50*1024*1024, tmpfile)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	for i := 0; i < 5000000; i++ {
 		text := strconv.Itoa(i)
@@ -57,4 +54,34 @@ func TestHashSorting(t *testing.T) {
 	if got != want {
 		t.Errorf("Got %s, want %s.", got, want)
 	}
+}
+
+func TestHashSorting(t *testing.T) {
+	tmpfile, err := ioutil.TempFile("", "emsort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	s, err := New(50*1024*1024, tmpfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkHashes(t, s)
+}
+
+func TestHashSortingFixed(t *testing.T) {
+	tmpfile, err := ioutil.TempFile("", "emsort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	s, err := NewFixedSize(sha256.Size, 50*1024*1024, tmpfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	checkHashes(t, s)
 }
