@@ -100,12 +100,12 @@ func (s *ExternalSorter) StopWriting() error {
 	// Free memory used by last read vals
 	s.vals = nil
 
-	files := make([]*bufio.Reader, len(s.sizes))
+	files := make([]*readerWrapper, len(s.sizes))
 	total := 0
 	for i, size := range s.sizes {
 		file := io.NewSectionReader(s.tmpfile, int64(total), int64(size))
 		total += size
-		files[i] = bufio.NewReaderSize(file, s.memLimit/len(s.sizes))
+		files[i] = newReaderWrapper(file)
 	}
 
 	s.entries = &entryHeap{
@@ -165,8 +165,28 @@ func (im *inmemory) Swap(i, j int) {
 	im.vals[i], im.vals[j] = im.vals[j], im.vals[i]
 }
 
+type readerWrapper struct {
+	sr *io.SectionReader
+}
+
+func newReaderWrapper(sr *io.SectionReader) *readerWrapper {
+	return &readerWrapper{sr}
+}
+
+func (r *readerWrapper) ReadByte() (byte, error) {
+	buf := make([]byte, 1)
+	if _, err := r.sr.Read(buf); err != nil {
+		return 0, err
+	}
+	return buf[0], nil
+}
+
+func (r *readerWrapper) Read(p []byte) (int, error) {
+	return r.sr.Read(p)
+}
+
 type entry struct {
-	file       *bufio.Reader
+	file       *readerWrapper
 	val        []byte
 	recordSize int
 }
